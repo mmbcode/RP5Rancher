@@ -1,0 +1,104 @@
+---
+- name: Condition Raspberry PI 5s
+  hosts: rpi
+  become: yes
+
+
+  tasks:
+    - name: Set Hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+      notify: restart networking
+
+    - name: Remove Installed Docker Package
+      apt:
+        name: docker
+        state: absent
+
+    - name: Add Docker/Kubernetes Repo Keys
+      apt_key:
+        url: "{{ item }}"
+        state: present
+      loop:
+        - https://download.docker.com/linux/debian/gpg
+        - https://packages.cloud.google.com/apt/doc/apt-key.gpg
+
+    - name: Add Docker/Kubernetes Repos
+      apt_repository:
+        repo: "{{ item }}"
+        state: present
+      loop:
+        - "deb [arch=arm64] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+        - "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+
+    - name: Update Packages
+      apt:
+        upgrade: yes
+      register: patched
+      changed_when: patched.changed
+
+    - name: Perform Apt Autoremove
+      apt:
+        autoclean: yes
+        autoremove: yes
+
+    - name: Update Apt Cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 86400
+
+    - name: Install Docker-ce, Kubelet, Kubeadm, Kubectl
+      apt:
+        state: present
+        name:
+          - docker-ce
+          - kubelet
+          - kubeadm
+          - kubectl
+
+    - name: Hold Packages
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - docker-ce
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Add User To Docker Group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes 
+
+    - name: Disable Raspberry Pi Swap (Kubernetes Requirement)
+      command: dphys-swapfile swapoff
+      when: "'armv71' in ansible_architecture"
+
+    - name: Remove Swap From /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        state: absent
+        regexp: '^/var/swap'
+      register: swap
+      when: "'armv71' in ansible_architecture"
+
+  handlers:
+    - name: Restart Networking
+      service:
+        name: networking
+        state: restarted
+
+    - name: Reboot Raspberry PI
+      command: reboot
+      async: 0
+      poll: 0
+      ignore_errors: true
+      listen: "Restart Mining Service"
+      when: patched.changed or swap.changed
+
+    - name: Restart Mining Service
+      systemd:
+        name: mining.service
+        start: restart
