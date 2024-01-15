@@ -3,33 +3,17 @@
   hosts: rpi
   become: yes
 
-
   tasks:
     - name: Set Hostname
       hostname:
         name: "{{ inventory_hostname }}"
       notify: restart networking
 
-    - name: Remove Installed Docker Package
-      apt:
-        name: docker
-        state: absent
-
-    - name: Add Docker/Kubernetes Repo Keys
-      apt_key:
-        url: "{{ item }}"
-        state: present
-      loop:
-        - https://download.docker.com/linux/debian/gpg
-        - https://packages.cloud.google.com/apt/doc/apt-key.gpg
-
-    - name: Add Docker/Kubernetes Repos
-      apt_repository:
-        repo: "{{ item }}"
-        state: present
-      loop:
-        - "deb [arch=arm64] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
-        - "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+    - name: Add AllowTcpForwarding yes to sshd_config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        line: 'AllowTcpForwarding yes'
+        insertafter: '^#AllowTcpForwarding'
 
     - name: Update Packages
       apt:
@@ -47,14 +31,78 @@
         update_cache: yes
         cache_valid_time: 86400
 
-    - name: Install Docker-ce, Kubelet, Kubeadm, Kubectl
+    - name: Remove Installed Docker Package
+      apt:
+        name: docker
+        state: absent
+
+    - name: Disable Raspberry Pi Swap (Kubernetes Requirement)
+      command: dphys-swapfile swapoff
+      when: "'armv71' in ansible_architecture"
+
+    - name: Remove Swap From /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        state: absent
+        regexp: '^/var/swap'
+      register: swap
+      when: "'armv71' in ansible_architecture"
+
+    - name: Sysctl - net.bridge.bridge-nf-call-iptables
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: 1
+        sysctl_set: yes
+        reload: yes
+
+    - name: Create /var/lib/docker
+      file:
+        path: /var/lib/docker
+        state: directory
+        mode: 755
+
+   - name: Reboot Raspberry PI
+      command: reboot
+      async: 0
+      poll: 0
+      ignore_errors: true
+      when: patched.changed
+
+    - name: Add Docker/Kubernetes/Helm Repo Keys
+      apt_key:
+        url: "{{ item }}"
+        state: present
+      loop:
+        - https://download.docker.com/linux/debian/gpg
+        - https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        - https://baltocdn.com/helm/signing.asc
+
+    - name: Add Docker/Kubernetes/Helm Repos
+      apt_repository:
+        repo: "{{ item }}"
+        state: present
+      loop:
+        - "deb [arch=arm64] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+        - "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+        - "deb [arch=arm64] https://baltocdn.com/helm/stable/debian/ all main"
+
+    - name: Install Docker-ce, Helm, Kubelet, Kubeadm, Kubectl, And Required Packages
       apt:
         state: present
         name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
           - docker-ce
-          - kubelet
+          - helm
           - kubeadm
           - kubectl
+          - kubelet
+          - lsof
+          - ntp
+          - python3-kubernetes
+          - python3-pip
+          - python3-yaml
 
     - name: Hold Packages
       ansible.builtin.dpkg_selections:
@@ -69,36 +117,36 @@
     - name: Add User To Docker Group
       user:
         name: "{{ ansible_user }}"
-        groups: docker
+        groups: "{{ item }}"
         append: yes 
+      loop:
+        - docker
 
-    - name: Disable Raspberry Pi Swap (Kubernetes Requirement)
-      command: dphys-swapfile swapoff
-      when: "'armv71' in ansible_architecture"
+    - name: Download RKE to /usr/local/bin
+      get_url:
+        url: "https://github.com/rancher/rke/releases/download/v1.5.1/rke_linux-arm64"
+        dest: "/usr/local/bin/rke"
+        mode: '0755'
+      retries: 42
+      delay: 10
 
-    - name: Remove Swap From /etc/fstab
-      lineinfile:
-        path: /etc/fstab
-        state: absent
-        regexp: '^/var/swap'
-      register: swap
-      when: "'armv71' in ansible_architecture"
+    - name: Copy Source Cluster.yml 
+      copy:
+        src: "{{ ansible_source_files }}cluster.yml"
+        dest: "/home/{{ ansible_user }}/cluster.yml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
 
-  handlers:
-    - name: Restart Networking
-      service:
-        name: networking
-        state: restarted
+    - name: Add Rancher Helm Repo
+      kubernetes.core.helm_repository:
+        name: rancher-stable
+        repo_url: https://releases.rancher.com/server-charts/stable
 
-    - name: Reboot Raspberry PI
-      command: reboot
-      async: 0
-      poll: 0
-      ignore_errors: true
-      listen: "Restart Mining Service"
-      when: patched.changed or swap.changed
-
-    - name: Restart Mining Service
-      systemd:
-        name: mining.service
-        start: restart
+    - name: RKE up
+      command: "rke up"
+      args:
+        chdir: "~"
+      delegate_to: rp5n1
+      become_user: "{{ ansible_user }}"
+      timeout: 3600
