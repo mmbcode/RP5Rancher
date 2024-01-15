@@ -22,12 +22,17 @@ Rancher
 - Add the Rancher Helm repository.
 - Execute rke up (Note: this doesn't seem to work). 
 
-TO DO:
+To do:
 1. Test reboot, using patched.changed as trigger.
 2. Investigate the warnings from the key adds for docker/kubernetes repos.
 3. Correct SSL certificate issues in my prestaged cluster.yml. Basically I need to learn Rancher better....
 4. Variablize the host that is used for the rke up command through the inventory in playbook. 
 
-STRETCH
+Stretch:
 1. Update playbook to execute "rke config" directly instead of using a prestaged cluster.yml.
 2. Setup hugepages, I tried but failed miserably bricking rp5 two times.
+
+References:
+https://rke.docs.rancher.com/installation
+https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/
+https://docs.docker.com/engine/install/debian/#install-using-the-repository
