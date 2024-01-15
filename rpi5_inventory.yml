@@ -1,0 +1,12 @@
+[rpi]
+(hostname) ansible_host=(ip)
+(hostname) ansible_host=(ip)
+(hostname) ansible_host=(ip)
+
+[rpi:vars]
+ansible_user=(username)
+ansible_ssh_private_key_file=(/path/sshkey)
+ansible_source_files=(/ansible/files)
+
+# Replace anything in () with actual values, Example
+# rp5n1 ansible_host=192.168.1.172
