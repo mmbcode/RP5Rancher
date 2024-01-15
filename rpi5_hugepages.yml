@@ -1,0 +1,67 @@
+---
+- name: Huge Pages Raspberry PI 5s
+  hosts: rpi
+  become: yes
+
+  tasks:
+    - name: Create my-hugetlbfs Group
+      group:
+        name: my-hugetlbfs
+        state: present
+
+    - name: Add User To  Hugepages Group
+      user:
+        name: "{{ ansible_user }}"
+        groups: my-hugetlbfs
+        append: yes 
+
+    - name: Get Hugetlbfs Group Id
+      getent:
+        database: group
+        key: my-hugetlbfs
+      register: huge
+
+    - name: Sysctl - vm.hugetlb_shm_group 
+      sysctl:
+        name: vm.hugetlb_shm_group
+        value: "{{ huge.ansible_facts['getent_group']['my-hugetlbfs'][1] }}"
+        state: present
+        reload: no
+
+    - name: Sysctl - vm.nr_hugepages
+      sysctl:
+        name: vm.nr_hugepages
+        value: 512
+        state: present
+        reload: no
+
+    - name: Apply sysctl settings
+      command: sysctl -p
+
+    - name: Make Hugepages dir
+      file:
+        path: /hugepages
+        state: directory
+        mode: 1770
+
+    - name: Add Hugepages To /etc/fstab
+      mount:
+        path: /hugepages
+        src: hugetlbfs
+        fstype: hugetlbfs 
+        opts: "mode=1770,gid={{ huge.ansible_facts['getent_group']['my-hugetlbfs'][1] }}"
+        state: mounted
+
+    - name: Add Hugepages to /boot/cmdline.txt
+      lineinfile:
+        path: /boot/cmdline.txt
+        line: ' hugepagesz=2M hugepages=512'
+        backrefs: yes
+        regexp: '^(.*?)( hugepagesz=\S+ hugepages=\S+)? *$'
+        state: present
+
+    - name: Reboot Raspberry PI
+      command: reboot
+      async: 0
+      poll: 0
+      ignore_errors: true
