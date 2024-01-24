@@ -1,0 +1,141 @@
+---
+- name: Install K3s and Rancher on Raspberry Pi 5
+  hosts: rpi
+  become: yes
+  vars:
+    k3s_token: ""
+    rancher_data_path: "/home/{{ ansible_user }}/rancher"
+
+  tasks:
+   - name: Set Hostname
+     hostname:
+      name: "{{ inventory_hostname }}"
+     notify: restart networking
+
+   - name: Add AllowTcpForwarding yes to sshd_config
+     lineinfile:
+      path: /etc/ssh/sshd_config
+      line: 'AllowTcpForwarding yes'
+      insertafter: '^#AllowTcpForwarding'
+
+   - name: Update Packages
+     apt:
+      upgrade: yes
+     register: patched
+     changed_when: patched.changed
+
+   - name: Perform Apt Autoremove
+     apt:
+      autoclean: yes
+      autoremove: yes
+
+   - name: Update Apt Cache
+     apt:
+      update_cache: yes
+      cache_valid_time: 86400
+
+   - name: Install Docker and some other random packages (for fun)
+     apt:
+      state: present
+      name:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - docker
+        - docker-compose
+        - lsof
+        - ntp
+        - python3-kubernetes
+        - python3-pip
+        - python3-yaml
+
+   - name: Create Rancher Directory
+     file:
+      path: "{{ rancher_data_path }}"
+      state: directory
+      owner: "{{ ansible_user }}"
+      group: "{{ ansible_user }}"
+      mode: '0755'
+
+   - name: Add user to docker group
+     user:
+      name: "{{ ansible_user }}"
+      groups: docker
+     become: yes
+
+   - name: Create /var/lib/docker
+     file:
+      path: /var/lib/docker
+      state: directory
+      mode: 755
+
+   - name: Ensure cgroup stuff is in /boot/cmdline.txt
+     ansible.builtin.lineinfile:
+      path: /boot/cmdline.txt
+      line: ' cgroup_memory=1 cgroup_enable=memory'
+      insertafter: EOF
+     when: "' cgroup_memory=1 cgroup_enable=memory' not in ansible.builtin.shell(cmd='cat /boot/cmdline.txt', warn=True).stdout"
+     
+   - name: Reboot 
+     command: reboot
+     async: 0
+     poll: 0
+     ignore_errors: true
+     when: patched.changed
+     register: reboot_result
+
+   - name: Wait for the system to reboot
+     wait_for_connection:
+       delay: 30
+       timeout: 300
+     when: reboot_result is succeeded
+
+   - name: Install k3s on Node 1
+     shell: curl -sfL https://get.k3s.io | sh -
+     when: inventory_hostname == groups['rpi'][0]
+
+   - name: Get k3s token from Node 1
+     command: cat /var/lib/rancher/k3s/server/token
+     register: k3s_token_result
+     when: inventory_hostname == groups['rpi'][0]
+     changed_when: false
+
+   - set_fact:
+      k3s_token: "{{ k3s_token_result.stdout }}"
+     when: inventory_hostname == groups['rpi'][0]
+
+    - name: Install k3s on Other Nodes
+      shell: "curl -sfL https://get.k3s.io | sh -s - server --token={{ k3s_token }} --server https://{{ hostvars[groups['rpi'][0]]['ansible_host'] }}:6443"
+      when: inventory_hostname != groups['rpi'][0]
+
+#   - name: Create docker-compose.yml for Rancher
+#     copy:
+#      content: |
+#        version: '3'
+#          services:
+#            rancher:
+#              image: rancher/rancher:latest
+#              ports:
+#                - "80:80"
+#                - "443:443"
+#              volumes:
+#                - "{{ rancher_data_path }}:/var/lib/rancher"
+#        dest: "{{ rancher_data_path }}/docker-compose.yml"
+#        owner: "{{ ansible_user }}"
+#        group: "{{ ansible_user }}"
+#        mode: '0644'
+#
+#   - name: Start Rancher with Docker Compose
+#     command: docker-compose -f {{ rancher_data_path }}/docker-compose.yml up -d
+#     when: inventory_hostname == groups['rpi'][0]
+#
+#   - name: Wait for Rancher to start
+#     wait_for:
+#      host: "http://{{ hostvars[inventory_hostname]['ansible_host'] }}:80"
+#      delay: 10
+#      timeout: 300
+#
+#   - name: Display Rancher URL
+#     debug:
+#      msg: "Rancher is accessible at http://{{ hostvars[inventory_hostname]['ansible_host'] }}:80"
+#
