@@ -94,6 +94,12 @@
      shell: curl -sfL https://get.k3s.io | sh -
      when: inventory_hostname == groups['rpi'][0]
 
+   - name: Wait for the k3s token file on Node 1
+     wait_for:
+       path: "/var/lib/rancher/k3s/server/token"
+       state: "exists"
+     when: inventory_hostname == groups['rpi'][0]
+     
    - name: Get k3s token from Node 1
      command: cat /var/lib/rancher/k3s/server/token
      register: k3s_token_result
